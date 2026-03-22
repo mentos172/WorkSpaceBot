@@ -1,0 +1,140 @@
+package main
+
+import (
+	"log"
+	"time"
+	"github.com/go-telegram-bot-api/telegram-bot-api"
+)
+
+// Структура для хранения состояния каждого пользователя
+type UserState struct {
+	StartTime   time.Time
+	TotalTime   time.Duration
+	OnBreak     bool
+	BreakStart  time.Time
+}
+
+var userStates = make(map[int]UserState)
+
+func main() {
+	bot, err := tgbotapi.NewBotAPI("ВАШ_ТЕЛЕГРАМ_Токен")
+	if err != nil {
+		log.Panic(err)
+	}
+
+	log.Printf("Authorized on account %s", bot.Self.UserName)
+
+	u := tgbotapi.NewUpdate(0)
+	u.Timeout = 60
+
+	updates, _ := bot.GetUpdatesChan(u)
+
+	for update := range updates {
+		if update.Message == nil { // игнорировать не сообщение
+			continue
+		}
+
+		userID := update.Message.From.ID
+		text := update.Message.Text
+
+		switch text {
+		case "/start":
+			handleStart(bot, update.Message.Chat.ID, userID)
+		case "/stop":
+			handleStop(bot, update.Message.Chat.ID, userID)
+		case "/status":
+			handleStatus(bot, update.Message.Chat.ID, userID)
+		case "/break":
+			handleBreak(bot, update.Message.Chat.ID, userID)
+		default:
+			// Неизвестная команда
+			msg := tgbotapi.NewMessage(update.Message.Chat.ID, "Команда не распознана. Используйте /start, /stop, /status, /break")
+			bot.Send(msg)
+		}
+	}
+}
+
+func handleStart(bot *tgbotapi.BotAPI, chatID int64, userID int) {
+	state := userStates[userID]
+	if !state.StartTime.IsZero() {
+		msg := tgbotapi.NewMessage(chatID, "Уже отслеживаешь время.")
+		bot.Send(msg)
+		return
+	}
+	state.StartTime = time.Now()
+	userStates[userID] = state
+	msg := tgbotapi.NewMessage(chatID, "Отслеживание запущено!")
+	bot.Send(msg)
+}
+
+func handleStop(bot *tgbotapi.BotAPI, chatID int64, userID int) {
+	state := userStates[userID]
+	if state.StartTime.IsZero() {
+		msg := tgbotapi.NewMessage(chatID, "Ты еще не начал отслеживание.")
+		bot.Send(msg)
+		return
+	}
+
+	now := time.Now()
+	elapsed := now.Sub(state.StartTime)
+
+	if state.OnBreak {
+		// если во время перерыва
+		breakDuration := now.Sub(state.BreakStart)
+		elapsed -= breakDuration
+		state.OnBreak = false
+	}
+
+	state.TotalTime += elapsed
+	state.StartTime = time.Time{} // сбрасываем
+	userStates[userID] = state
+
+	msg := tgbotapi.NewMessage(chatID, "Отслеживание остановлено!\nОбщее время: "+formatDuration(state.TotalTime))
+	bot.Send(msg)
+}
+
+func handleStatus(bot *tgbotapi.BotAPI, chatID int64, userID int) {
+	state := userStates[userID]
+	total := state.TotalTime
+
+	// если отслеживание активно, добавим текущий промежуток
+	if !state.StartTime.IsZero() {
+		now := time.Now()
+		elapsed := now.Sub(state.StartTime)
+		if state.OnBreak {
+			breakDuration := now.Sub(state.BreakStart)
+			elapsed -= breakDuration
+		}
+		total += elapsed
+	}
+
+	msg := tgbotapi.NewMessage(chatID, "Общее время: "+formatDuration(total))
+	bot.Send(msg)
+}
+
+func handleBreak(bot *tgbotapi.BotAPI, chatID int64, userID int) {
+	state := userStates[userID]
+	if state.StartTime.IsZero() {
+		msg := tgbotapi.NewMessage(chatID, "Сперва начни отслеживание (/start).")
+		bot.Send(msg)
+		return
+	}
+	if state.OnBreak {
+		msg := tgbotapi.NewMessage(chatID, "Уже на перерыве.")
+		bot.Send(msg)
+		return
+	}
+	state.OnBreak = true
+	state.BreakStart = time.Now()
+	userStates[userID] = state
+
+	msg := tgbotapi.NewMessage(chatID, "Переход на перерыв!")
+	bot.Send(msg)
+}
+
+func formatDuration(d time.Duration) string {
+	h := int(d.Hours())
+	m := int(d.Minutes()) % 60
+	s := int(d.Seconds()) % 60
+	return fmt.Sprintf("%02dч %02dм %02dс", h, m, s)
+}
