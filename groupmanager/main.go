@@ -1,32 +1,53 @@
 package main
 
-import "errors"
-
-var (
-	ErrEmptyGroupName  = errors.New("название группы не может быть пустым")
-	ErrInvalidLeadData = errors.New("некорректные данные лида")
+import (
+	"encoding/json"
+	"log"
+	"net/http"
 )
 
-// Для простоты используем мапу userID->группы и лиды
-var groups = make(map[string][]string)
-var leads = make(map[string][]string)
-
-// Создать новую группу
-func CreateGroup(userID, groupName string) (string, error) {
-	if groupName == "" {
-		return "", ErrEmptyGroupName
-	}
-	groups[userID] = append(groups[userID], groupName)
-	return "Группа '" + groupName + "' создана", nil
+type response struct {
+	Message string `json:"message"`
 }
 
-// Добавить лида: формат данных — "Имя, Телефон"
-func AddLead(userID, leadData string) (string, error) {
-	parts := []rune(leadData)
-	if len(parts) == 0 {
-		return "", ErrInvalidLeadData
+func main() {
+	http.HandleFunc("/add_group", handleAddGroup)
+	http.HandleFunc("/add_lead", handleAddLead)
+
+	log.Println("Бизнес-сервис запущен на :8000")
+	if err := http.ListenAndServe(":8000", nil); err != nil {
+		log.Fatal("Ошибка запуска сервера:", err)
 	}
-	// Можно добавить более строгую проверку
-	leads[userID] = append(leads[userID], leadData)
-	return "Лид '" + leadData + "' добавлен", nil
+
+}
+
+func handleAddGroup(w http.ResponseWriter, r *http.Request) {
+	userID := r.URL.Query().Get("user_id")
+	if userID == "" {
+		http.Error(w, "user_id required", http.StatusBadRequest)
+		return
+	}
+
+	// здесь могла бы быть ваша логика добавления группы
+	msg := "Группа добавлена для пользователя " + userID
+
+	sendJSON(w, response{Message: msg})
+}
+
+func handleAddLead(w http.ResponseWriter, r *http.Request) {
+	userID := r.URL.Query().Get("user_id")
+	if userID == "" {
+		http.Error(w, "user_id required", http.StatusBadRequest)
+		return
+	}
+
+	// и логика добавления лида
+	msg := "Лид добавлен для пользователя " + userID
+
+	sendJSON(w, response{Message: msg})
+}
+
+func sendJSON(w http.ResponseWriter, resp response) {
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp)
 }

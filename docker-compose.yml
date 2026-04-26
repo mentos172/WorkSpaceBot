@@ -3,12 +3,21 @@ services:
     build: ./tracker
     ports:
       - "9000:9000"
+    restart: always
+
+  groupmanager:
+    build: ./groupmanager
+    ports:
+      - "8000:8000"
+    restart: always
 
   router:
     build: ./router
     env_file:
       - .env
-    environment:
-      - BOT_TOKEN=8656289848:AAH7WbX4O3kF2l8jearYz6i3t0SPX_C84EA
     depends_on:
       - tracker
+      - groupmanager
+    ports:
+      - "8080:8080" # добавим порт, чтобы можно было обращаться к роутеру, если нужно
+    restart: always
