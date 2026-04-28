@@ -64,12 +64,10 @@ func main() {
 				text = callTrackerAPI("/start", userID)
 			case "stop":
 				text = callTrackerAPI("/stop", userID)
-			case "status":
-				text = callTrackerAPI("/status", userID)
-			case "add_group":
-				text = callBusinessAPI("/add_group", userID)
-			case "add_lead":
-				text = callBusinessAPI("/add_lead", userID)
+			case "task":
+				text = callTrackerAPI("/task", userID)
+			case "admin_console":
+				text = callBusinessAPI("/admin_console", userID)
 			default:
 				text = "Неизвестная команда"
 			}
@@ -92,11 +90,10 @@ func sendButtons(bot *tgbotapi.BotAPI, chatID int64) {
 		tgbotapi.NewInlineKeyboardRow(
 			tgbotapi.NewInlineKeyboardButtonData("Старт", "start"),
 			tgbotapi.NewInlineKeyboardButtonData("Стоп", "stop"),
-			tgbotapi.NewInlineKeyboardButtonData("Статус", "status"),
+			tgbotapi.NewInlineKeyboardButtonData("Задача", "task"),
 		),
 		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("Добавить группу", "add_group"),
-			tgbotapi.NewInlineKeyboardButtonData("Добавить лида", "add_lead"),
+			tgbotapi.NewInlineKeyboardButtonData("Консоль администратора", "admin_console"),
 		),
 	)
 	if _, err := bot.Send(msg); err != nil {
