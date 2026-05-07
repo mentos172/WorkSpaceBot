@@ -15,6 +15,7 @@ import (
 var (
 	trackerBaseURL  = "http://tracker:9000"
 	businessBaseURL = "http://groupmanager:8000"
+	awaitingInput   = make(map[string]bool)
 )
 
 func main() {
@@ -36,20 +37,28 @@ func main() {
 	for update := range updates {
 		// Обработка сообщений с текстом
 		if update.Message != nil {
-			switch update.Message.Text {
-			case "/start":
-				sendButtons(bot, update.Message.Chat.ID)
+			userID := fmt.Sprint(update.Message.From.ID)
 
-			case "/stop":
-				userID := fmt.Sprint(update.Message.From.ID)
-				msg := callTrackerAPI("/stop", userID)
-				sendMessage(bot, update.Message.Chat.ID, msg)
+			// Проверяем, ожидаем ли мы ввод для этого пользователя
+			if awaitingInput[userID] {
+				task_name := update.Message.Text
+				delete(awaitingInput, userID) // снимаем статус ожидания
 
-			default:
-				sendMessage(bot, update.Message.Chat.ID, "Используйте команды /start и /stop или нажмите кнопки ниже.")
-				sendButtons(bot, update.Message.Chat.ID) // Показываем кнопки при любом другом сообщении для удобства
+				// тут можно выполнить действие с полученным текстом
+				// например, отправить в API или сохранить
+				sendMessage(bot, update.Message.Chat.ID, "Вы ввели: "+task_name)
+
+				// если нужно, вызовите сюда API или другую логику
+			} else {
+				switch update.Message.Text {
+				case "/start":
+					sendButtons(bot, update.Message.Chat.ID)
+				default:
+					sendMessage(bot, update.Message.Chat.ID, "Используйте команду /start или нажмите кнопки ниже.")
+					sendButtons(bot, update.Message.Chat.ID) // Показываем кнопки при любом другом сообщении для удобства
+				}
+				continue
 			}
-			continue
 		}
 
 		// Обработка нажатий на Inline-кнопки
@@ -60,18 +69,31 @@ func main() {
 
 			var text string
 			switch data {
-			case "start":
-				text = callTrackerAPI("/start", userID)
-			case "stop":
-				text = callTrackerAPI("/stop", userID)
+			case "start_task":
+				text = callTrackerAPI("/start_task", userID)
+			case "stop_task":
+				text = callTrackerAPI("/stop_task", userID)
+			// case "task":
+			// 	text = callTrackerAPI("/task", userID)
 			case "task":
-				text = callTrackerAPI("/task", userID)
+				sendMessage(bot, chatID, "Пожалуйста, введите описание задачи.")
+				awaitingInput[userID] = true
 			case "admin_console":
-				text = callBusinessAPI("/admin_console", userID)
+				// показываем дополнительные admin-кнопки
+				sendAdminButtons(bot, chatID)
+				return // завершить обработку здесь, чтобы не отправлять дублирующее сообщение
+			// здесь можно также обработать новые callback для admin
+			case "add_group":
+				text = "add group" // или вызов функции API
+			case "add_user":
+				text = "add user" // или вызов функции API
+			case "delete_group":
+				text = "delete group"
+			case "add_lead":
+				text = "add lead"
 			default:
 				text = "Неизвестная команда"
 			}
-
 			// Отвечаем на callback, чтобы убрать «часики» в интерфейсе
 			callback := tgbotapi.NewCallback(update.CallbackQuery.ID, text)
 			if _, err := bot.Request(callback); err != nil {
@@ -88,8 +110,8 @@ func sendButtons(bot *tgbotapi.BotAPI, chatID int64) {
 	msg := tgbotapi.NewMessage(chatID, "Выберите действие:")
 	msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(
 		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("Старт", "start"),
-			tgbotapi.NewInlineKeyboardButtonData("Стоп", "stop"),
+			tgbotapi.NewInlineKeyboardButtonData("Старт", "start_task"),
+			tgbotapi.NewInlineKeyboardButtonData("Стоп", "stop_task"),
 			tgbotapi.NewInlineKeyboardButtonData("Задача", "task"),
 		),
 		tgbotapi.NewInlineKeyboardRow(
@@ -98,6 +120,23 @@ func sendButtons(bot *tgbotapi.BotAPI, chatID int64) {
 	)
 	if _, err := bot.Send(msg); err != nil {
 		log.Println("Ошибка отправки кнопок:", err)
+	}
+}
+
+func sendAdminButtons(bot *tgbotapi.BotAPI, chatID int64) {
+	msg := tgbotapi.NewMessage(chatID, "Выберите административную команду:")
+	msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("Добавить Группу", "add_group"),
+			tgbotapi.NewInlineKeyboardButtonData("Добавить Пользователя", "add_user"),
+			tgbotapi.NewInlineKeyboardButtonData("Удалить Группу", "delete_group"),
+		),
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("Добавить Лида", "add_lead"),
+		),
+	)
+	if _, err := bot.Send(msg); err != nil {
+		log.Println("Ошибка отправки admin-кнопок:", err)
 	}
 }
 

@@ -1,8 +1,27 @@
 services:
+  my_postgres:
+    image: postgres:18.3
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: 1244
+      POSTGRES_DB: postgres
+    ports:
+      - "5432:5432"
+    restart: always
+
   tracker:
     build: ./tracker
     ports:
       - "9000:9000"
+    environment:
+      - DB_HOST=my_postgres
+      - DB_PORT=5432
+      - DB_NAME=postgres
+      - DB_USER=postgres
+      - DB_PASSWORD=1244
+    depends_on:
+      - my_postgres
+    command: ["/bin/sh", "-c", "./wait-for-it.sh my_postgres:5432 -- ./start-tracker.sh"]
     restart: always
 
   groupmanager:
