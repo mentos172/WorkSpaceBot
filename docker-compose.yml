@@ -21,7 +21,6 @@ services:
       - DB_PASSWORD=1244
     depends_on:
       - my_postgres
-    command: ["/bin/sh", "-c", "./wait-for-it.sh my_postgres:5432 -- ./start-tracker.sh"]
     restart: always
 
   groupmanager:

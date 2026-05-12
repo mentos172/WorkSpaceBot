@@ -15,9 +15,11 @@ import (
 
 type Task struct {
 	UserID    string
+	TaskName  string
 	StartedAt time.Time
 	StoppedAt *time.Time
 	TrackID   string
+	TaskID    string
 }
 
 var tasks = make(map[string]*Task)
@@ -26,9 +28,8 @@ var db *sql.DB
 var err error
 
 func main() {
-	http.HandleFunc("/start_task", startHandler)
 	http.HandleFunc("/stop_task", stopHandler)
-	http.HandleFunc("/status", statusHandler)
+	http.HandleFunc("/start_task", taskHandler)
 	db, err = sql.Open("postgres", "host=my_postgres port=5432 user=postgres password=1244 dbname=postgres sslmode=disable")
 	if err != nil {
 		log.Fatal("Ошибка открытия базы данных:", err)
@@ -51,117 +52,33 @@ func main() {
 
 }
 
-func startHandler(w http.ResponseWriter, r *http.Request) {
-	userID := r.URL.Query().Get("user_id")
-	if userID == "" {
-		http.Error(w, "user_id required", http.StatusBadRequest)
-		return
-	}
-	mu.Lock()
-	defer mu.Unlock()
-
-	if _, exists := tasks[userID]; exists {
-		http.Error(w, "task already started", http.StatusConflict)
-		return
-	}
-
-	duration := time.Now()
-	trackID := uuid.New().String()
-	tasks[userID] = &Task{UserID: userID, StartedAt: duration, TrackID: trackID}
-
-	resp := map[string]string{
-		"message":  "Task started",
-		"duration": duration.Format("15:04:05"), // время запуска в формате ЧЧ:ММ:СС
-	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(resp)
-	// Вставить новую запись в Tracking !!!!! с этим вылет!!!
-	var currentDB string
-	err = db.QueryRow("SELECT current_database()").Scan(&currentDB)
-	if err != nil {
-		log.Println("Ошибка получения текущей базы:", err)
-	}
-	log.Println("Текущая база:", currentDB)
-	rows, err := db.Query(`SHOW search_path`)
-	if err != nil {
-		log.Println("Ошибка при получении search_path:", err)
-	} else {
-		var path string
-		if rows.Next() {
-			err = rows.Scan(&path)
-			if err != nil {
-				log.Println("Ошибка чтения search_path:", err)
-			} else {
-				log.Println("Текущий search_path:", path)
-			}
-		}
-	}
-	_, err = db.Exec(`
-    INSERT INTO public.users (user_id)
-    VALUES ($1)
-	ON CONFLICT (user_id) DO NOTHING
-`, userID)
-	if err != nil {
-		log.Printf("Ошибка при вставке: %v\n", err)
-	}
-
-	startTime := duration
-	//taskID := uuid.Nil // либо NULL, если task_id пока не известен, замените на нужный
-
-	_, err = db.Exec(`
-    INSERT INTO public.tracking (track_id, user_id, start_time)
-    VALUES ($1, $2, $3)
-`, trackID, userID, startTime)
-	if err != nil {
-		log.Printf("Ошибка при вставке в tracking: %v\n", err)
-	}
-	if err != nil {
-		log.Println(err)
-		http.Error(w, "db error", 500)
-		return
-	}
-
-}
-
-func statusHandler(w http.ResponseWriter, r *http.Request) {
-	userID := r.URL.Query().Get("user_id")
-	if userID == "" {
-		http.Error(w, "user_id required", http.StatusBadRequest)
-		return
-	}
-
-	mu.Lock()
-	defer mu.Unlock()
-
-	task, exists := tasks[userID]
-	if !exists {
-		http.Error(w, "no task started", http.StatusNotFound)
-		return
-	}
-
-	// Вычислить длительность с момента старта до сейчас
-	duration := time.Since(task.StartedAt).Round(time.Second)
-
-	resp := map[string]string{
-		"message":  "Task is running",
-		"duration": duration.String(),
-	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(resp)
-}
-
 func stopHandler(w http.ResponseWriter, r *http.Request) {
-	userID := r.URL.Query().Get("user_id")
+	var userID, comment string
+
+	switch r.Method {
+	case http.MethodPost:
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, "invalid form", http.StatusBadRequest)
+			return
+		}
+		userID = r.Form.Get("user_id")
+		comment = r.Form.Get("comment")
+	default:
+		userID = r.URL.Query().Get("user_id")
+		comment = r.URL.Query().Get("comment")
+	}
+
 	if userID == "" {
 		http.Error(w, "user_id required", http.StatusBadRequest)
 		return
 	}
+
 	mu.Lock()
 	defer mu.Unlock()
 
 	task, exists := tasks[userID]
 	if !exists {
-		http.Error(w, "no task started", http.StatusNotFound)
+		http.Error(w, "Нет запущенной задачи", http.StatusNotFound)
 		return
 	}
 	now := time.Now()
@@ -171,8 +88,22 @@ func stopHandler(w http.ResponseWriter, r *http.Request) {
 
 	delete(tasks, userID) // Очистим задачу
 
-	resp := map[string]string{"message": "Task stopped", "duration": duration.String()}
+	resp := map[string]string{
+		"message":  "Задача выполнена",
+		"duration": duration.String(),
+		"comment":  comment,
+	}
+	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
+
+	_, err = db.Exec(`
+        UPDATE public.tasks
+        SET t_description = $1 
+        WHERE task_id = $2
+    `, comment, task.TaskID)
+	if err != nil {
+		log.Printf("Ошибка обновления stop_time/comment: %v\n", err)
+	}
 
 	_, err = db.Exec(`
     UPDATE public.tracking
@@ -191,4 +122,85 @@ func stopHandler(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		log.Printf("Ошибка обновления stop_time: %v\n", err)
 	}
+}
+
+func taskHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Only POST supported", http.StatusMethodNotAllowed)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "invalid form", http.StatusBadRequest)
+		return
+	}
+	userID := r.Form.Get("user_id")
+	username := r.Form.Get("username")
+	taskName := r.Form.Get("task")
+	//username := r.Form.Get("username")
+	if userID == "" || taskName == "" {
+		http.Error(w, "user_id and task required", http.StatusBadRequest)
+		return
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	// Уже есть активная задача
+	if _, exists := tasks[userID]; exists {
+		http.Error(w, "Задача уже запущена", http.StatusConflict)
+		return
+	}
+
+	now := time.Now()
+	trackID := uuid.New().String()
+	taskID := uuid.New().String()
+	tasks[userID] = &Task{
+		UserID:    userID,
+		TaskName:  taskName,
+		StartedAt: now,
+		TrackID:   trackID,
+		TaskID:    taskID,
+	}
+	resp := map[string]string{
+		"message":  "Задача начата",
+		"task":     taskName,
+		"duration": now.Format("15:04:05"),
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp)
+
+	// Добавляем или обновляем пользователя с именем
+	_, err = db.Exec(`
+		INSERT INTO public.users (user_id, username)
+		VALUES ($1, $2)
+		ON CONFLICT (user_id) DO UPDATE SET username = EXCLUDED.username
+	`, userID, username)
+	if err != nil {
+		log.Printf("Ошибка при вставке/обновлении пользователя: %v\n", err)
+	}
+
+	_, err = db.Exec(`
+    INSERT INTO public.tasks(task_id, t_name)
+    VALUES ($1, $2)
+`, taskID, taskName)
+	if err != nil {
+		log.Printf("Ошибка при вставке: %v\n", err)
+	}
+
+	startTime := now
+	//taskID := uuid.Nil // либо NULL, если task_id пока не известен, замените на нужный
+
+	_, err = db.Exec(`
+    INSERT INTO public.tracking (track_id, user_id, start_time, task_id)
+    VALUES ($1, $2, $3, $4)
+`, trackID, userID, startTime, taskID)
+	if err != nil {
+		log.Printf("Ошибка при вставке в tracking: %v\n", err)
+	}
+	if err != nil {
+		log.Println(err)
+		http.Error(w, "db error", 500)
+		return
+	}
+
 }

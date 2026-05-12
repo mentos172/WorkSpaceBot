@@ -1,26 +1,40 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"log"
-	"net/http"
-	"net/url"
-	"time"
+	"os"
+	"strings"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
 
+// Добавляем структуру для хранения состояния задач
+type UserTaskState struct {
+	IsRunning bool
+	TaskName  string
+}
+
 var (
-	trackerBaseURL  = "http://tracker-service:9000"
-	businessBaseURL = "http://business-service:9001"
+	trackerBaseURL  = "http://tracker:9000"
+	businessBaseURL = "http://groupmanager:8000"
+	awaitingInput   = make(map[string]string) // userID -> ожидаемый action ("start", "stop")
+	userTasks       = make(map[string]UserTaskState)
 )
 
 func main() {
-	bot, err := tgbotapi.NewBotAPI("ВАШ_ТОКЕН_ТЕЛЕГРАМ")
-	if err != nil {
-		log.Panic(err)
+	botToken := os.Getenv("BOT_TOKEN")
+	if botToken == "" {
+		log.Fatal("BOT_TOKEN не установлен в переменных окружения.")
 	}
+
+	bot, err := tgbotapi.NewBotAPI(botToken)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	bot.Debug = true
+	log.Printf("Authorized on account %s", bot.Self.UserName)
 
 	u := tgbotapi.NewUpdate(0)
 	u.Timeout = 60
@@ -28,23 +42,54 @@ func main() {
 	updates := bot.GetUpdatesChan(u)
 
 	for update := range updates {
-		// Обработка текстовых сообщений (команды /start, /stop)
 		if update.Message != nil {
-			switch update.Message.Text {
-			case "/start":
-				sendButtons(bot, update.Message.Chat.ID)
-			case "/stop":
-				userID := fmt.Sprint(update.Message.From.ID)
-				msg := callTrackerAPI("/stop", userID)
-				sendMessage(bot, update.Message.Chat.ID, msg)
-			default:
-				sendMessage(bot, update.Message.Chat.ID, "Используйте команды /start и /stop или нажмите кнопки ниже.")
-				sendButtons(bot, update.Message.Chat.ID)
+			userID := fmt.Sprint(update.Message.From.ID)
+			username := update.Message.From.UserName
+
+			// Проверка, ожидаем ли мы ввод
+			if act, ok := awaitingInput[userID]; ok {
+				inputText := update.Message.Text
+				delete(awaitingInput, userID)
+
+				var res string
+				if act == "start" {
+					// Проверка, запущена ли уже задача
+					if state, exists := userTasks[userID]; exists && state.IsRunning {
+						res = "Задача уже запущена."
+					} else {
+						res = callTrackerAPI("/start_task", userID, username, inputText)
+						if strings.Contains(res, "время") {
+							userTasks[userID] = UserTaskState{IsRunning: true, TaskName: inputText}
+						}
+					}
+				} else if act == "stop" {
+					// Проверка, есть ли запущенная задача
+					if state, exists := userTasks[userID]; !exists || !state.IsRunning {
+						res = "Нет активной задачи для остановки."
+					} else {
+						res = callTrackerAPI("/stop_task", userID, username, inputText)
+						if !strings.Contains(res, "Ошибка") && !strings.HasPrefix(res, "Ошибка") {
+							// При успешной остановке сбрасываем состояние
+							userTasks[userID] = UserTaskState{IsRunning: false, TaskName: ""}
+						}
+					}
+				} else {
+					res = "Некорректный тип ожидаемого ввода."
+				}
+				sendMessage(bot, update.Message.Chat.ID, res)
+				continue
+			} else {
+				switch update.Message.Text {
+				case "/start":
+					sendButtons(bot, update.Message.Chat.ID)
+				default:
+					sendMessage(bot, update.Message.Chat.ID, "Используйте команду /start или нажмите кнопки ниже.")
+					sendButtons(bot, update.Message.Chat.ID)
+				}
+				continue
 			}
-			continue
 		}
 
-		// Обработка нажатий на inline-кнопки
 		if update.CallbackQuery != nil {
 			data := update.CallbackQuery.Data
 			userID := fmt.Sprint(update.CallbackQuery.From.ID)
@@ -52,105 +97,45 @@ func main() {
 
 			var text string
 			switch data {
-			case "start":
-				text = callTrackerAPI("/start", userID)
-			case "stop":
-				text = callTrackerAPI("/stop", userID)
-			case "status":
-				text = callTrackerAPI("/status", userID)
+			case "start_task":
+				// Перед запросом проверяем, есть ли активная задача
+				if state, exists := userTasks[userID]; exists && state.IsRunning {
+					text = "Задача уже запущена."
+				} else {
+					sendMessage(bot, chatID, "Введите название задачи.")
+					awaitingInput[userID] = "start"
+					continue
+				}
+			case "stop_task":
+				// Перед запросом проверяем, есть ли активная задача
+				if state, exists := userTasks[userID]; !exists || !state.IsRunning {
+					text = "Нет активной задачи для остановки."
+				} else {
+					sendMessage(bot, chatID, "Введите описание или комментарии к задаче.")
+					awaitingInput[userID] = "stop"
+					continue
+				}
+			case "admin_console":
+				sendAdminButtons(bot, chatID)
+				return
 			case "add_group":
-				text = callBusinessAPI("/add_group", userID)
+				text = "add group"
+			case "add_user":
+				text = "add user"
+			case "delete_group":
+				text = "delete group"
 			case "add_lead":
-				text = callBusinessAPI("/add_lead", userID)
+				text = "add lead"
 			default:
 				text = "Неизвестная команда"
 			}
 
-			// Отвечаем callback-ом, чтобы убрать "загрузку" кнопки
+			// Отправляем ответ callback, чтобы убрать "часики"
 			callback := tgbotapi.NewCallback(update.CallbackQuery.ID, text)
 			if _, err := bot.Request(callback); err != nil {
 				log.Println("Ошибка отправки callback:", err)
 			}
-
-			// Отправляем сообщение с результатом действия
 			sendMessage(bot, chatID, text)
 		}
 	}
-}
-
-func sendButtons(bot *tgbotapi.BotAPI, chatID int64) {
-	msg := tgbotapi.NewMessage(chatID, "Выберите действие:")
-	msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(
-		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("Старт", "start"),
-			tgbotapi.NewInlineKeyboardButtonData("Стоп", "stop"),
-			tgbotapi.NewInlineKeyboardButtonData("Статус", "status"),
-		),
-		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("Добавить группу", "add_group"),
-			tgbotapi.NewInlineKeyboardButtonData("Добавить лида", "add_lead"),
-		),
-	)
-	if _, err := bot.Send(msg); err != nil {
-		log.Println("Ошибка отправки кнопок:", err)
-	}
-}
-
-func sendMessage(bot *tgbotapi.BotAPI, chatID int64, text string) {
-	msg := tgbotapi.NewMessage(chatID, text)
-	if _, err := bot.Send(msg); err != nil {
-		log.Println("Ошибка отправки сообщения:", err)
-	}
-}
-
-func callTrackerAPI(endpoint, userID string) string {
-	fullURL := fmt.Sprintf("%s%s?user_id=%s", trackerBaseURL, endpoint, url.QueryEscape(userID))
-	client := http.Client{Timeout: 5 * time.Second}
-
-	resp, err := client.Get(fullURL)
-	if err != nil {
-		return "Ошибка вызова трекера"
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Sprintf("Ошибка трекера: %s", resp.Status)
-	}
-
-	var respJSON map[string]string
-	err = json.NewDecoder(resp.Body).Decode(&respJSON)
-	if err != nil {
-		return "Непредвиденный ответ от трекера"
-	}
-
-	if msg, ok := respJSON["message"]; ok {
-		return msg
-	}
-	return "Ответ трекера без сообщения"
-}
-
-func callBusinessAPI(endpoint, userID string) string {
-	fullURL := fmt.Sprintf("%s%s?user_id=%s", businessBaseURL, endpoint, url.QueryEscape(userID))
-	client := http.Client{Timeout: 5 * time.Second}
-
-	resp, err := client.Get(fullURL)
-	if err != nil {
-		return "Ошибка вызова бизнес-сервиса"
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Sprintf("Ошибка бизнес-сервиса: %s", resp.Status)
-	}
-
-	var respJSON map[string]string
-	err = json.NewDecoder(resp.Body).Decode(&respJSON)
-	if err != nil {
-		return "Непредвиденный ответ от бизнес-сервиса"
-	}
-
-	if msg, ok := respJSON["message"]; ok {
-		return msg
-	}
-	return "Ответ бизнес-сервиса без сообщения"
 }
