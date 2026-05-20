@@ -75,6 +75,16 @@ func main() {
 							userTasks[userID] = UserTaskState{IsRunning: false, TaskName: ""}
 						}
 					}
+				} else if act == "lead" {
+					res = callBusinessAPI("/add_lead", userID, username, inputText)
+				} else if act == "add_group" {
+					res = callBusinessAPI("/add_group", userID, username, inputText)
+				} else if act == "add_user" {
+					res = callBusinessAPI("/add_user", userID, username, inputText)
+				} else if act == "delete_group" {
+					res = callBusinessAPI("/delete_group", userID, username, inputText)
+				} else if act == "delete_user" {
+					res = callBusinessAPI("/delete_user", userID, username, inputText)
 				} else {
 					res = "Некорректный тип ожидаемого ввода."
 				}
@@ -116,17 +126,45 @@ func main() {
 					awaitingInput[userID] = "stop"
 					continue
 				}
+				// case "admin_console":
+				// 	sendAdminButtons(bot, chatID)
+				// 	return // завершить обработку здесь, чтобы не отправлять дублирующее сообщение
+
 			case "admin_console":
-				sendAdminButtons(bot, chatID)
-				return // завершить обработку здесь, чтобы не отправлять дублирующее сообщение
+				status, err := getUserStatus(userID)
+				if err != nil {
+					sendMessage(bot, chatID, "Ошибка при проверке прав.")
+					return
+				}
+				if status == "lead" || status == "god" {
+					sendAdminButtons(bot, chatID)
+				} else {
+					sendMessage(bot, chatID, "У вас нет прав для доступа к административной консоли.")
+				}
+				return
+
 			case "add_group":
-				text = "add group"
+				sendMessage(bot, chatID, "Введите название группы, которую хотите создать.")
+				awaitingInput[userID] = "add_group"
+				continue
 			case "add_user":
-				text = "add user"
+				sendMessage(bot, chatID, "Введите id пользователя и название группы через пробел.")
+				awaitingInput[userID] = "add_user"
+				continue
 			case "delete_group":
-				text = "delete group"
+				sendMessage(bot, chatID, "Введите название группы которую хотите удалить.")
+				awaitingInput[userID] = "delete_group"
+				continue
+			case "delete_user":
+				sendMessage(bot, chatID, "Введите id пользователя и название группы через пробел.")
+				awaitingInput[userID] = "delete_user"
+				continue
 			case "add_lead":
-				text = "add lead"
+				sendMessage(bot, chatID, "Введите id пользователя, которого хотите назначить лидом.")
+				awaitingInput[userID] = "lead"
+				continue
+			case "my_id":
+				text = userID
 			default:
 				text = "Неизвестная команда"
 			}
@@ -148,6 +186,9 @@ func sendButtons(bot *tgbotapi.BotAPI, chatID int64) {
 			tgbotapi.NewInlineKeyboardButtonData("Стоп", "stop_task"),
 		),
 		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("Ваш ID", "my_id"),
+		),
+		tgbotapi.NewInlineKeyboardRow(
 			tgbotapi.NewInlineKeyboardButtonData("Консоль администратора", "admin_console"),
 		),
 	)
@@ -162,6 +203,9 @@ func sendAdminButtons(bot *tgbotapi.BotAPI, chatID int64) {
 		tgbotapi.NewInlineKeyboardRow(
 			tgbotapi.NewInlineKeyboardButtonData("Добавить Группу", "add_group"),
 			tgbotapi.NewInlineKeyboardButtonData("Добавить Пользователя", "add_user"),
+		),
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("Удалить Пользователя", "delete_user"),
 			tgbotapi.NewInlineKeyboardButtonData("Удалить Группу", "delete_group"),
 		),
 		tgbotapi.NewInlineKeyboardRow(
@@ -227,11 +271,16 @@ func callTrackerAPI(endpoint, userID, username string, extra ...string) string {
 	return "Непредвиденный ответ от трекера"
 }
 
-func callBusinessAPI(endpoint, userID string) string {
-	fullURL := fmt.Sprintf("%s%s?user_id=%s", businessBaseURL, endpoint, url.QueryEscape(userID))
+func callBusinessAPI(endpoint, userID, username, leadText string) string {
+	fullURL := fmt.Sprintf("%s%s", businessBaseURL, endpoint)
 	client := http.Client{Timeout: 5 * time.Second}
 
-	resp, err := client.Get(fullURL)
+	data := url.Values{}
+	data.Set("user_id", userID)
+	data.Set("username", username)
+	data.Set("leadText", leadText) // Передача текста лида
+
+	resp, err := client.PostForm(fullURL, data)
 	if err != nil {
 		return "Ошибка вызова бизнес-сервиса"
 	}
@@ -251,6 +300,24 @@ func callBusinessAPI(endpoint, userID string) string {
 		return msg
 	}
 	return "Ответ бизнес-сервиса без сообщения"
+}
+
+func getUserStatus(userID string) (string, error) {
+	// пример вызова API
+	apiURL := fmt.Sprintf("%s/get_user_status?user_id=%s", businessBaseURL, url.QueryEscape(userID))
+	resp, err := http.Get(apiURL)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	var result struct {
+		Status string `json:"status"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", err
+	}
+	return result.Status, nil
 }
 
 func sendMessage(bot *tgbotapi.BotAPI, chatID int64, text string) {
